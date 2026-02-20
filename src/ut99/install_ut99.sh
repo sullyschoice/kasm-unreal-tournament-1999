@@ -35,6 +35,10 @@ sed -i 's/StartupFullscreen=True/StartupFullscreen=False/' /opt/ut99/System/Defa
 sed -i 's/UseFullscreen=True/UseFullscreen=False/' /opt/ut99/System/Default.ini
 sed -i 's/UseJoystick=False/UseJoystick=True/' /opt/ut99/System/Default.ini
 
+sed -i 's/StartupFullscreen=True/StartupFullscreen=False/' /opt/ut99/System64/UnrealTournament.ini
+sed -i 's/UseFullscreen=True/UseFullscreen=False/' /opt/ut99/System64/UnrealTournament.ini
+sed -i 's/UseJoystick=False/UseJoystick=True/' /opt/ut99/System64/UnrealTournament.ini
+
 sed -i 's/^W=.*/W=MoveForward/' /opt/ut99/System64/User.ini
 sed -i 's/^A=.*/A=StrafeLeft/' /opt/ut99/System64/User.ini
 sed -i 's/^S=.*/S=MoveBackward/' /opt/ut99/System64/User.ini
