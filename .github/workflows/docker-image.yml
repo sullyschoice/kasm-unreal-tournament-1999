@@ -1,35 +1,109 @@
 name: Build and publish a Docker image to ghcr.io
-on:
 
-  # publish on releases, e.g. v2.1.13 (image tagged as "2.1.13" - "v" prefix is removed)
+# Branch flow:
+#   develop push / schedule -> latest + 1.19.0-rolling (Kasm 1.19 and older) and 1.20.0-rolling (Kasm 1.20+)
+#   any other branch push   -> test images tagged <branch>-<kasm rolling tag>
+#   published release       -> <version> (1.19) and <version>-1.20.0-rolling
+#
+# Security: there is deliberately no pull_request / pull_request_target trigger, so pull
+# requests (including from forks) never run this workflow. Only people with push access
+# to this repository can start a build.
+
+on:
   release:
     types: [ published ]
 
-  # publish on pushes to the main branch (image tagged as "latest")
   push:
     branches:
-      - develop
+      - '**'
 
   schedule:
     - cron: "0 13 22 * *"
 
+  workflow_dispatch:
+
+concurrency:
+  # One run per branch; a newer push to a test branch cancels the older build.
+  # develop, releases and scheduled builds always run to completion.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' && github.event_name != 'release' && github.event_name != 'schedule' }}
+
+permissions:
+  contents: read
+
 jobs:
   docker_publish:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
 
-    steps:
-      - uses: actions/checkout@v2
+    strategy:
+      # Build both Kasm variants even if one fails
+      fail-fast: false
+      matrix:
+        include:
+          # Kasm 1.19 and older
+          - kasm: "1.19"
+            base_tag: 1.19.0-rolling-daily
+            rolling_tag: 1.19.0-rolling
+            also_latest: true
+            release_suffix: ""
+          # Kasm 1.20 and newer (switch base_tag to the 1.20 rolling tag once Kasm publishes it)
+          - kasm: "1.20"
+            base_tag: develop
+            rolling_tag: 1.20.0-rolling
+            also_latest: false
+            release_suffix: "-1.20.0-rolling"
 
-      # https://github.com/marketplace/actions/push-to-ghcr
-      - name: Build and publish a Docker image for ${{ github.repository }}
-        uses: macbre/push-to-ghcr@master
+    name: docker_publish (Kasm ${{ matrix.kasm }})
+
+    env:
+      IS_DEVELOP: ${{ github.ref == 'refs/heads/develop' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          image_name: ${{ github.repository }}  # it will be lowercased internally
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # optionally push to the Docker Hub (docker.io)
-          # docker_io_token: ${{ secrets.DOCKER_IO_ACCESS_TOKEN }}  # see https://hub.docker.com/settings/security
-          # customize the username to be used when pushing to the Docker Hub
-          # docker_io_user: foobar  # see https://github.com/macbre/push-to-ghcr/issues/14
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
+          tags: |
+            # develop: latest (1.19 variant only) and the Kasm rolling tag
+            type=raw,value=latest,enable=${{ matrix.also_latest && env.IS_DEVELOP == 'true' }}
+            type=raw,value=${{ matrix.rolling_tag }},enable=${{ env.IS_DEVELOP == 'true' }}
+
+            # test branches: <branch>-<rolling tag>, e.g. fix-startup-1.20.0-rolling
+            type=ref,event=branch,suffix=-${{ matrix.rolling_tag }},enable=${{ env.IS_DEVELOP != 'true' }}
+
+            # release tag (strip leading v); 1.20 variant gets a suffix so it doesn't collide
+            type=semver,pattern={{version}},suffix=${{ matrix.release_suffix }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          pull: true
+          platforms: linux/amd64
+          build-args: |
+            BASE_TAG=${{ matrix.base_tag }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
